@@ -19,13 +19,15 @@ import json
 import numpy as np
 import mindspore.common.dtype as mstype
 from mindspore.common.tensor import Tensor
-from src import tokenization
-from src.sample_process import label_generation, process_one_example_p
-from src.CRF import postprocess
-from src.finetune_eval_config import bert_net_cfg
-from src.score import get_result
+from . import tokenization
+from .sample_process import label_generation, process_one_example_p
+from .evaluation_config import cfg
+from .CRF import postprocess
 
-def process(model=None, text="", tokenizer_=None, use_crf="", tag_to_index=None, vocab=""):
+vocab_file = "./vocab.txt"
+tokenizer_ = tokenization.FullTokenizer(vocab_file=vocab_file)
+
+def process(model, text, sequence_length):
     """
     process text.
     """
@@ -34,13 +36,13 @@ def process(model=None, text="", tokenizer_=None, use_crf="", tag_to_index=None,
     res = []
     ids = []
     for i in data:
-        feature = process_one_example_p(tokenizer_, vocab, i, max_seq_len=bert_net_cfg.seq_length)
+        feature = process_one_example_p(tokenizer_, i, max_seq_len=sequence_length)
         features.append(feature)
         input_ids, input_mask, token_type_id = feature
         input_ids = Tensor(np.array(input_ids), mstype.int32)
         input_mask = Tensor(np.array(input_mask), mstype.int32)
         token_type_id = Tensor(np.array(token_type_id), mstype.int32)
-        if use_crf.lower() == "true":
+        if cfg.use_crf:
             backpointers, best_tag_id = model.predict(input_ids, input_mask, token_type_id, Tensor(1))
             best_path = postprocess(backpointers, best_tag_id)
             logits = []
@@ -52,25 +54,20 @@ def process(model=None, text="", tokenizer_=None, use_crf="", tag_to_index=None,
             ids = logits.asnumpy()
             ids = np.argmax(ids, axis=-1)
             ids = list(ids)
-    res = label_generation(text=text, probs=ids, tag_to_index=tag_to_index)
+    res = label_generation(text, ids)
     return res
 
-def submit(model=None, path="", vocab_file="", use_crf="", label_file="", tag_to_index=None):
+def submit(model, path, sequence_length):
     """
     submit task
     """
-    tokenizer_ = tokenization.FullTokenizer(vocab_file=vocab_file)
     data = []
     for line in open(path):
         if not line.strip():
             continue
         oneline = json.loads(line.strip())
-        res = process(model=model, text=oneline["text"], tokenizer_=tokenizer_,
-                      use_crf=use_crf, tag_to_index=tag_to_index, vocab=vocab_file)
+        res = process(model, oneline["text"], sequence_length)
+        print("text", oneline["text"])
+        print("res:", res)
         data.append(json.dumps({"label": res}, ensure_ascii=False))
     open("ner_predict.json", "w").write("\n".join(data))
-    labels = []
-    with open(label_file) as f:
-        for label in f:
-            labels.append(label.strip())
-    get_result(labels, "ner_predict.json", path)
